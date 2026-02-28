@@ -3,3 +3,6 @@
 *.csv
 *.jpg
 venv/
+*.pth
+*.npy
+__pycache__/
