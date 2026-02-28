@@ -78,6 +78,7 @@ def compute_TACFM_loss( model, adj_batch ) :
     batch_size = adj_batch.shape[0] 
 
     x1 = flatten_adj_to_vec(adj_batch) 
+    x1 = x1 * 2 - 1   # {0,1} → {-1,+1} — sharp binary signal
     x1 = normalize_to_sphere(x1) 
 
     # random noise on the sphere.
@@ -129,6 +130,7 @@ def compute_euclidean_loss(model, adj_batch):
     batch_size = adj_batch.shape[0] 
 
     x1 = flatten_adj_to_vec(adj_batch) 
+    x1 = x1 * 2 - 1   # {0,1} → {-1,+1} — sharp binary signal 
     x0 = torch.randn_like(x1) 
 
     # random time 
@@ -186,7 +188,7 @@ def generate_graphs_tacfm(model, num_samples, num_steps = 50):
 
     #  Convert back to adjacency matrices
     adj = vect_to_adj(x, n=MAX_NODES)
-    adj = torch.sigmoid(adj * 5)
+    adj = (adj > 0).float()  # positive = edge, negative = no edge
     return adj.cpu().numpy() 
 
 @torch.no_grad()
@@ -206,7 +208,7 @@ def generate_graphs_euclidean(model, num_samples, num_steps=50):
         v = model(x, t)
         x = x + v * dt  # plain Euler step, no normalization
     adj = vect_to_adj(x, n=MAX_NODES)
-    adj = torch.sigmoid(adj * 5)
+    adj = (adj > 0).float()  # positive = edge, negative = no edge
     return adj.cpu().numpy()
     
     

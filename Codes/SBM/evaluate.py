@@ -266,7 +266,7 @@ def generate_from_model(model_type, model_path, num_samples=100, num_steps=50):
             x = x + v * dt
     
     adj = vect_to_adj(x, n=MAX_NODES)
-    adj = torch.sigmoid(adj * 5)
+    adj = (adj > 0).float()  # positive = edge, negative = no edge
     return adj.detach().cpu().numpy()
 
 

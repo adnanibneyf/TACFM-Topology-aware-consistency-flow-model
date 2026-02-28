@@ -152,7 +152,7 @@ def adj_tensors_to_graphs(adj_tensors, threshold = 0.5):
 if __name__ == "__main__": 
     print("------- Generating community_small dataset ( GDSS matching ) ---------") 
     graphs = generate_community_dataset( 
-        num_graphs = 100, 
+        num_graphs = 500, 
         min_nodes = 12, 
         max_nodes = 20, 
         num_communities = 2, 

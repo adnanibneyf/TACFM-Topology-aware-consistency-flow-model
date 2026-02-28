@@ -75,7 +75,7 @@ class TACFM(nn.Module):
             ResidualBlock(hidden_dim), 
             ResidualBlock(hidden_dim), 
             ResidualBlock(hidden_dim), 
-            ResidualBlock(hidden_dim) 
+            nn.LayerNorm(hidden_dim)
         )
 
         # Output : veclocity vector ( same dim as input = 190 ) 
