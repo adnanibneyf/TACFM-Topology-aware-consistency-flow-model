@@ -18,10 +18,14 @@ import argparse
 import warnings
 warnings.filterwarnings('ignore')
 
+import os
+import time
+
 from model import (
     TACFM, EuclideanFM_GraphModel,
     flatten_adj_to_vec, vect_to_adj, normalize_to_sphere
 )
+from model_GCN import GCN_TACFM
 
 MAX_NODES = 20
 DATA_DIM = MAX_NODES * (MAX_NODES - 1) // 2
@@ -237,10 +241,13 @@ def adj_to_graphs(adj_array, threshold=0.5):
 #  GENERATION FROM SAVED MODELS
 # ============================================================
 
-def generate_from_model(model_type, model_path, num_samples=100, num_steps=50):
+def generate_from_model(model_type, arch, model_path, num_samples=100, num_steps=50):
     """Load a saved model and generate graphs."""
     if model_type == 'tacfm':
-        model = TACFM(data_dim=DATA_DIM).to(DEVICE)
+        if arch == 'gcn':
+            model = GCN_TACFM(max_nodes=MAX_NODES).to(DEVICE)
+        else:
+            model = TACFM(data_dim=DATA_DIM).to(DEVICE)
     else:
         model = EuclideanFM_GraphModel(data_dim=DATA_DIM).to(DEVICE)
     
@@ -290,19 +297,40 @@ def evaluate():
         ref_graphs = pickle.load(f)
     print(f"  Reference: {len(ref_graphs)} graphs")
     
-    # --- Generate from both models ---
+    # --- Models to evaluate (name, model_type, arch, path) ---
+    models_to_eval = []
+    
+    # Check which results directories exist
+    if os.path.exists('TACFM_GCN_results/best_model.pth'):
+        models_to_eval.append(('TACFM (GCN)', 'tacfm', 'gcn', 'TACFM_GCN_results/best_model.pth'))
+    if os.path.exists('TACFM_MLP_results/best_model.pth'):
+        models_to_eval.append(('TACFM (MLP)', 'tacfm', 'mlp', 'TACFM_MLP_results/best_model.pth'))
+    if os.path.exists('EUCLIDEAN_MLP_results/best_model.pth'):
+        models_to_eval.append(('Euclidean', 'euclidean', 'mlp', 'EUCLIDEAN_MLP_results/best_model.pth'))
+    
+    # Fallback: check for old-style paths
+    if not models_to_eval:
+        if os.path.exists('tacfm_mlp_best.pth'):
+            models_to_eval.append(('TACFM (MLP)', 'tacfm', 'mlp', 'tacfm_mlp_best.pth'))
+        if os.path.exists('tacfm_best.pth'):
+            models_to_eval.append(('TACFM (MLP)', 'tacfm', 'mlp', 'tacfm_best.pth'))
+        if os.path.exists('euclidean_mlp_best.pth'):
+            models_to_eval.append(('Euclidean', 'euclidean', 'mlp', 'euclidean_mlp_best.pth'))
+        if os.path.exists('euclidean_best.pth'):
+            models_to_eval.append(('Euclidean', 'euclidean', 'mlp', 'euclidean_best.pth'))
+    
+    if not models_to_eval:
+        print("ERROR: No trained models found. Run train.py first.")
+        return
+    
+    print(f"  Found {len(models_to_eval)} model(s) to evaluate")
+    
     results = {}
     
-    models_to_eval = {
-        'TACFM': ('tacfm', 'tacfm_best.pth'),
-        'Euclidean': ('euclidean', 'euclidean_best.pth'),
-    }
-    
-    for name, (mtype, mpath) in models_to_eval.items():
+    for name, mtype, arch, mpath in models_to_eval:
         print(f"\nGenerating {args.num_samples} graphs from {name}...")
-        import time
         start = time.time()
-        gen_adj = generate_from_model(mtype, mpath, args.num_samples, args.num_steps)
+        gen_adj = generate_from_model(mtype, arch, mpath, args.num_samples, args.num_steps)
         gen_time = time.time() - start
         
         gen_graphs = adj_to_graphs(gen_adj)
@@ -331,31 +359,38 @@ def evaluate():
         }
     
     # --- Print comparison table ---
-    print("\n" + "=" * 70)
+    print("\n" + "=" * 75)
     print("  BENCHMARK RESULTS — Community_small (lower MMD = better)")
-    print("=" * 70)
-    print(f"{'Model':<15} {'Deg.↓':>10} {'Clus.↓':>10} {'Spec.↓':>10} {'Valid':>8} {'Time':>8}")
-    print("-" * 70)
+    print("=" * 75)
+    print(f"{'Model':<18} {'Deg.↓':>10} {'Clus.↓':>10} {'Spec.↓':>10} {'Valid':>8} {'Time':>8}")
+    print("-" * 75)
     
     for name, r in results.items():
-        print(f"{name:<15} {r['Deg.']:>10.6f} {r['Clus.']:>10.6f} "
+        print(f"{name:<18} {r['Deg.']:>10.6f} {r['Clus.']:>10.6f} "
               f"{r['Spec.']:>10.6f} {r['Valid']:>6}/{args.num_samples}  "
               f"{r['Time']:>6.2f}s")
     
-    # GDSS published numbers (from their paper, Table 1)
-    print(f"{'GDSS (paper)':<15} {'0.045':>10} {'0.017':>10} {'--':>10} {'--':>8} {'--':>8}")
-    print("=" * 70)
+    # GDSS published numbers
+    print(f"{'GDSS (paper)':<18} {'0.045':>10} {'0.017':>10} {'--':>10} {'--':>8} {'--':>8}")
+    print("=" * 75)
     
-    # --- Winner announcement ---
-    if 'TACFM' in results and 'Euclidean' in results:
-        tacfm_avg = (results['TACFM']['Deg.'] + results['TACFM']['Clus.'] + 
-                     results['TACFM']['Spec.']) / 3
-        euc_avg = (results['Euclidean']['Deg.'] + results['Euclidean']['Clus.'] + 
-                   results['Euclidean']['Spec.']) / 3
+    # --- Find best TACFM variant ---
+    tacfm_results = {k: v for k, v in results.items() if 'TACFM' in k}
+    euc_results = {k: v for k, v in results.items() if 'Euclidean' in k}
+    
+    if tacfm_results and euc_results:
+        best_tacfm_name = min(tacfm_results, key=lambda k: 
+            (tacfm_results[k]['Deg.'] + tacfm_results[k]['Clus.'] + tacfm_results[k]['Spec.']) / 3)
+        best_tacfm = tacfm_results[best_tacfm_name]
+        euc_name = list(euc_results.keys())[0]
+        euc = euc_results[euc_name]
+        
+        tacfm_avg = (best_tacfm['Deg.'] + best_tacfm['Clus.'] + best_tacfm['Spec.']) / 3
+        euc_avg = (euc['Deg.'] + euc['Clus.'] + euc['Spec.']) / 3
         
         if tacfm_avg < euc_avg:
-            improvement = ((euc_avg - tacfm_avg) / euc_avg) * 100
-            print(f"\n  TACFM wins by {improvement:.1f}% average MMD reduction!")
+            improvement = ((euc_avg - tacfm_avg) / abs(euc_avg)) * 100
+            print(f"\n  Best TACFM variant: {best_tacfm_name} — wins by {improvement:.1f}% avg MMD reduction!")
         else:
             print(f"\n  Euclidean baseline performs better. Consider tuning hyperparameters.")
     

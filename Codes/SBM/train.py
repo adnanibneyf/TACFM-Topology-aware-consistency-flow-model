@@ -7,10 +7,12 @@ import pickle
 import argparse
 import matplotlib.pyplot as plt
 import time  
+import os
 
 from model import ( 
     TACFM, EuclideanFM_GraphModel, flatten_adj_to_vec, vect_to_adj, normalize_to_sphere 
 )
+from model_GCN import GCN_TACFM
 
 # Config 
 MAX_NODES = 20
@@ -217,9 +219,14 @@ def generate_graphs_euclidean(model, num_samples, num_steps=50):
 
 def train(args): 
 
-    print(f" Training : {args.model.upper()} model") 
+    # Create results directory
+    results_dir = f"{args.model.upper()}_{args.arch.upper()}_results"
+    os.makedirs(results_dir, exist_ok=True)
+
+    print(f" Training : {args.model.upper()} model (arch: {args.arch})") 
     print(f" Epochs: {args.epochs}") 
     print(f" Device : {DEVICE}") 
+    print(f" Results dir: {results_dir}/")
 
     # load the data
 
@@ -227,7 +234,10 @@ def train(args):
 
 
     if args.model == 'tacfm': 
-        model = TACFM(DATA_DIM).to(DEVICE) 
+        if args.arch == 'gcn':
+            model = GCN_TACFM(max_nodes=MAX_NODES).to(DEVICE)
+        else:
+            model = TACFM(DATA_DIM).to(DEVICE) 
         loss_fn = compute_TACFM_loss
         generate_fn = generate_graphs_tacfm
     else: 
@@ -270,7 +280,7 @@ def train(args):
 
         if avg_loss < best_loss: 
             best_loss = avg_loss 
-            torch.save(model.state_dict(), f"{args.model}_best.pth") 
+            torch.save(model.state_dict(), os.path.join(results_dir, "best_model.pth")) 
 
         if ( epoch + 1 ) % 50 == 0 or epoch == 0:
             elapsed = time.time() - start_time 
@@ -284,7 +294,7 @@ def train(args):
     print(f"Best loss: {best_loss:.6f}")
 
     #  Save the final model
-    torch.save(model.state_dict(), f"model_{args.model}_final.pth")
+    torch.save(model.state_dict(), os.path.join(results_dir, "final_model.pth"))
 
     # generate sample graphs
     print(f"Generating 20 sample graphs...")  
@@ -292,21 +302,21 @@ def train(args):
     generate_adj = generate_fn(model, num_samples=20, num_steps=50) 
     gen_time = time.time() - gen_strt 
     print(f"Generated {len(generate_adj)} graphs in {gen_time:.1f}s") 
-    np.save(f"generated_{args.model}_graphs.npy", generate_adj) 
+    np.save(os.path.join(results_dir, "generated_graphs.npy"), generate_adj) 
     
 
     #  plot training curve 
 
     plt.figure(figsize=(10,5)) 
-    plt.plot(loss_history, label = f"{args.model.upper()} loss")
+    plt.plot(loss_history, label = f"{args.model.upper()} ({args.arch.upper()}) loss")
     plt.xlabel("Epoch") 
     plt.ylabel("Loss(MSE)") 
-    plt.title(f"{args.model.upper()} Training progress") 
+    plt.title(f"{args.model.upper()} ({args.arch.upper()}) Training progress") 
     plt.legend() 
     plt.grid(True, alpha = 0.3) 
-    plt.savefig(f"training_curve_{args.model}.png")
+    plt.savefig(os.path.join(results_dir, "training_curve.png"))
     plt.close() 
-    print(f"Saved training curve to training_curve_{args.model}.png")
+    print(f"Saved results to {results_dir}/")
 
     return loss_history
 
@@ -315,6 +325,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train TACFM or Euclidean model")
     parser.add_argument('--model', type=str, choices=['tacfm', 'euclidean'],
                         required=True, help='Model type: tacfm or euclidean')
+    parser.add_argument('--arch', type=str, choices=['mlp', 'gcn'], default='mlp',
+                        help='Architecture: mlp (default) or gcn (graph-aware)')
     parser.add_argument('--epochs', type=int, default=2000,
                         help='Number of training epochs')
     parser.add_argument('--lr', type=float, default=1e-3,
