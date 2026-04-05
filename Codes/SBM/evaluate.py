@@ -26,6 +26,8 @@ from model import (
     flatten_adj_to_vec, vect_to_adj, normalize_to_sphere
 )
 from model_GCN import GCN_TACFM
+from TACFM import _TACFM_
+from _TACM_ import _TACM_
 
 MAX_NODES = 20
 DATA_DIM = MAX_NODES * (MAX_NODES - 1) // 2
@@ -277,6 +279,37 @@ def generate_from_model(model_type, arch, model_path, num_samples=100, num_steps
     return adj.detach().cpu().numpy()
 
 
+@torch.no_grad()
+def generate_from_consistency(model_path, num_samples=50, num_steps=1, is_tacm=False):
+    """Generate graphs using the consistency model (1-step or few-step)."""
+    if is_tacm:
+        model = _TACM_(max_nodes=MAX_NODES).to(DEVICE)
+    else:
+        model = _TACFM_(max_nodes=MAX_NODES).to(DEVICE)
+    model.load_state_dict(torch.load(model_path, map_location=DEVICE))
+    model.eval()
+    
+    x = torch.randn(num_samples, DATA_DIM, device=DEVICE)
+    x = normalize_to_sphere(x)
+    
+    if num_steps == 1:
+        t = torch.zeros(num_samples, 1, device=DEVICE)  # t=0: fully predict
+        x = model(x, t)
+    else:
+        time_points = torch.linspace(0.0, 0.8, num_steps)
+        for i in range(num_steps):
+            t = torch.full((num_samples, 1), time_points[i].item(), device=DEVICE)
+            x = model(x, t)
+            x = normalize_to_sphere(x)
+            if i < num_steps - 1:
+                noise = torch.randn_like(x) * 0.05
+                x = normalize_to_sphere(x + noise)
+    
+    adj = vect_to_adj(x, n=MAX_NODES)
+    adj = (adj > 0).float()
+    return adj.detach().cpu().numpy()
+
+
 # ============================================================
 #  MAIN EVALUATION
 # ============================================================
@@ -307,6 +340,19 @@ def evaluate():
         models_to_eval.append(('TACFM (MLP)', 'tacfm', 'mlp', 'TACFM_MLP_results/best_model.pth'))
     if os.path.exists('EUCLIDEAN_MLP_results/best_model.pth'):
         models_to_eval.append(('Euclidean', 'euclidean', 'mlp', 'EUCLIDEAN_MLP_results/best_model.pth'))
+    
+    # Consistency model variants
+    consistency_path = None
+    for cpath in ['results_consistency/best_model.pth', 'results_consistnecy/best_model.pth']:
+        if os.path.exists(cpath):
+            consistency_path = cpath
+            break
+    has_consistency = consistency_path is not None
+
+    tacm_path = None
+    if os.path.exists('results_tacm/_TACM_best.pth'):
+        tacm_path = 'results_tacm/_TACM_best.pth'
+    has_tacm = tacm_path is not None
     
     # Fallback: check for old-style paths
     if not models_to_eval:
@@ -358,24 +404,83 @@ def evaluate():
             'Valid': len(gen_graphs),
         }
     
+    # --- Evaluate consistency model variants ---
+    if has_consistency:
+        for steps_label, n_steps in [('TACFM-C (1-step)', 1), ('TACFM-C (4-step)', 4)]:
+            print(f"\nGenerating {args.num_samples} graphs from {steps_label}...")
+            start = time.time()
+            gen_adj = generate_from_consistency(consistency_path, args.num_samples, n_steps)
+            gen_time = time.time() - start
+            
+            gen_graphs = adj_to_graphs(gen_adj)
+            print(f"  Generated {len(gen_graphs)} valid graphs in {gen_time:.2f}s")
+            
+            if len(gen_graphs) > 0:
+                node_counts = [G.number_of_nodes() for G in gen_graphs]
+                edge_counts = [G.number_of_edges() for G in gen_graphs]
+                print(f"  Nodes: {np.mean(node_counts):.1f} avg (real: "
+                      f"{np.mean([G.number_of_nodes() for G in ref_graphs]):.1f})")
+                print(f"  Edges: {np.mean(edge_counts):.1f} avg (real: "
+                      f"{np.mean([G.number_of_edges() for G in ref_graphs]):.1f})")
+                
+                print(f"  Computing metrics...")
+                results[steps_label] = {
+                    'Deg.': degree_stats(ref_graphs, gen_graphs),
+                    'Clus.': clustering_stats(ref_graphs, gen_graphs),
+                    'Spec.': spectral_stats(ref_graphs, gen_graphs),
+                    'Time': gen_time,
+                    'Valid': len(gen_graphs),
+                }
+            else:
+                print("  WARNING: No valid graphs generated!")
+
+    if has_tacm:
+        for steps_label, n_steps in [('TACM-Exp (1-step)', 1), ('TACM-Exp (4-step)', 4)]:
+            print(f"\nGenerating {args.num_samples} graphs from {steps_label}...")
+            start = time.time()
+            gen_adj = generate_from_consistency(tacm_path, args.num_samples, n_steps, is_tacm=True)
+            gen_time = time.time() - start
+            
+            gen_graphs = adj_to_graphs(gen_adj)
+            print(f"  Generated {len(gen_graphs)} valid graphs in {gen_time:.2f}s")
+            
+            if len(gen_graphs) > 0:
+                node_counts = [G.number_of_nodes() for G in gen_graphs]
+                edge_counts = [G.number_of_edges() for G in gen_graphs]
+                print(f"  Nodes: {np.mean(node_counts):.1f} avg (real: "
+                      f"{np.mean([G.number_of_nodes() for G in ref_graphs]):.1f})")
+                print(f"  Edges: {np.mean(edge_counts):.1f} avg (real: "
+                      f"{np.mean([G.number_of_edges() for G in ref_graphs]):.1f})")
+                
+                print(f"  Computing metrics...")
+                results[steps_label] = {
+                    'Deg.': degree_stats(ref_graphs, gen_graphs),
+                    'Clus.': clustering_stats(ref_graphs, gen_graphs),
+                    'Spec.': spectral_stats(ref_graphs, gen_graphs),
+                    'Time': gen_time,
+                    'Valid': len(gen_graphs),
+                }
+            else:
+                print("  WARNING: No valid graphs generated!")
+    
     # --- Print comparison table ---
-    print("\n" + "=" * 75)
-    print("  BENCHMARK RESULTS — Community_small (lower MMD = better)")
-    print("=" * 75)
-    print(f"{'Model':<18} {'Deg.↓':>10} {'Clus.↓':>10} {'Spec.↓':>10} {'Valid':>8} {'Time':>8}")
-    print("-" * 75)
+    print("\n" + "=" * 80)
+    print("  BENCHMARK RESULTS -- Community_small (lower MMD = better)")
+    print("=" * 80)
+    print(f"{'Model':<20} {'Deg.(v)':>10} {'Clus.(v)':>10} {'Spec.(v)':>10} {'Valid':>8} {'Time':>8}")
+    print("-" * 80)
     
     for name, r in results.items():
-        print(f"{name:<18} {r['Deg.']:>10.6f} {r['Clus.']:>10.6f} "
+        print(f"{name:<20} {r['Deg.']:>10.6f} {r['Clus.']:>10.6f} "
               f"{r['Spec.']:>10.6f} {r['Valid']:>6}/{args.num_samples}  "
               f"{r['Time']:>6.2f}s")
     
     # GDSS published numbers
-    print(f"{'GDSS (paper)':<18} {'0.045':>10} {'0.017':>10} {'--':>10} {'--':>8} {'--':>8}")
-    print("=" * 75)
+    print(f"{'GDSS (paper)':<20} {'0.045':>10} {'0.017':>10} {'--':>10} {'--':>8} {'--':>8}")
+    print("=" * 80)
     
     # --- Find best TACFM variant ---
-    tacfm_results = {k: v for k, v in results.items() if 'TACFM' in k}
+    tacfm_results = {k: v for k, v in results.items() if 'TACFM' in k or 'TACM' in k}
     euc_results = {k: v for k, v in results.items() if 'Euclidean' in k}
     
     if tacfm_results and euc_results:
@@ -390,7 +495,7 @@ def evaluate():
         
         if tacfm_avg < euc_avg:
             improvement = ((euc_avg - tacfm_avg) / abs(euc_avg)) * 100
-            print(f"\n  Best TACFM variant: {best_tacfm_name} — wins by {improvement:.1f}% avg MMD reduction!")
+            print(f"\n  Best TACFM variant: {best_tacfm_name} -- wins by {improvement:.1f}% avg MMD reduction!")
         else:
             print(f"\n  Euclidean baseline performs better. Consider tuning hyperparameters.")
     
